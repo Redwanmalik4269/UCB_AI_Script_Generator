@@ -2,17 +2,16 @@
 streamlit==1.39.0
 pandas==2.2.2
 
-# === NLP Model & Dependencies ===
+# === Model + NLP Dependencies (prebuilt wheels) ===
 transformers==4.43.3
-tokenizers==0.19.1       # Precompiled wheel — no Rust needed
-torch==2.3.1             # GPU/CPU auto support
+tokenizers==0.19.1
+torch==2.3.1+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 accelerate==0.33.0
-sentencepiece==0.2.0     # Needed for T5 and multilingual models
+sentencepiece==0.2.0
 
-# === File Processing ===
+# === File & Utility ===
 python-docx==1.1.2
 gdown==5.1.0
-
-# === Utilities ===
 requests
 tqdm
