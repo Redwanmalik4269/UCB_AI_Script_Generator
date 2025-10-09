@@ -1,8 +1,18 @@
-streamlit
+# === Core Framework ===
+streamlit==1.39.0
+pandas==2.2.2
+
+# === NLP Model & Dependencies ===
 transformers==4.43.3
-torch
-accelerate
-pandas
-python-docx
-gdown
-sentencepiece
+tokenizers==0.19.1       # Precompiled wheel — no Rust needed
+torch==2.3.1             # GPU/CPU auto support
+accelerate==0.33.0
+sentencepiece==0.2.0     # Needed for T5 and multilingual models
+
+# === File Processing ===
+python-docx==1.1.2
+gdown==5.1.0
+
+# === Utilities ===
+requests
+tqdm
