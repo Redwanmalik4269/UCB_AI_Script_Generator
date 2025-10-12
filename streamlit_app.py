@@ -11,6 +11,9 @@ from urllib.parse import urlparse, parse_qs
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from docx import Document
 import gdown
+import transformers
+st.write("Transformers version:", transformers.__version__)
+st.write("Available modules:", dir(transformers)[:15])
 
 # ============ Utility functions ============
 def _paragraphize(txt):
@@ -177,3 +180,4 @@ with col2:
 
 st.markdown("---")
 st.caption("© UCB Asset Management Ltd | For internal demo and training use")
+
