@@ -11,9 +11,6 @@ from urllib.parse import urlparse, parse_qs
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from docx import Document
 import gdown
-import transformers
-st.write("Transformers version:", transformers.__version__)
-st.write("Available modules:", dir(transformers)[:15])
 
 # ============ Utility functions ============
 def _paragraphize(txt):
@@ -57,18 +54,22 @@ PRODUCT_FACTS = {
 def facts_for(product: str) -> str:
     f = PRODUCT_FACTS.get(product or "", {})
     if not f: return ""
-    return " | ".join([f"রিটার্ন: {f['indicative_return']}",
-                       f"এক্সিট লোড: {f['exit_load']}",
-                       f"{f['sip']}", f"{f['non_sip']}", f"{f['tax']}"])
+    return " | ".join([
+        f"রিটার্ন: {f['indicative_return']}",
+        f"এক্সিট লোড: {f['exit_load']}",
+        f"{f['sip']}", f"{f['non_sip']}", f"{f['tax']}"
+    ])
 
 # ============ Model ============
 MODEL_NAME = "google/flan-t5-small"
-st.cache_resource(show_spinner=False)
+
+@st.cache_resource(show_spinner=False)
 def load_model():
     tok = AutoTokenizer.from_pretrained(MODEL_NAME)
     mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    pipe = pipeline("text2text-generation", model=mdl, tokenizer=tok, device_map="auto")
+    pipe = pipeline("text2text-generation", model=mdl, tokenizer=tok)
     return pipe
+
 gen = load_model()
 
 # ============ Prompt & Generation ============
@@ -77,80 +78,101 @@ def _facts_block(product, include):
     ftxt = facts_for(product)
     return f"\n\nপণ্য-তথ্য (হুবহু ব্যবহার করুন): {ftxt}\n" if ftxt else ""
 
-def build_prompt(client_type, product, horizon, risk, extra, include_facts=True):
+def build_prompt(client_type, product, horizon, risk, extra, tone, include_facts=True):
     shots = SAMPLES.get(client_type, [])
     ex = _paragraphize(shots[0]["script"]) if shots else ""
+
+    # 🧠 Tone-specific instructions
+    tone_instructions = {
+        "Factual": "সংক্ষিপ্ত ও তথ্যনির্ভরভাবে লিখুন, কেবল প্রয়োজনীয় তথ্য উপস্থাপন করুন।",
+        "Elaborated": "বিস্তারিতভাবে লিখুন, যেন একজন আর্থিক পরামর্শদাতা বিনিয়োগকারীর কাছে ব্যাখ্যা দিচ্ছে। বাস্তব উদাহরণ ও তুলনা ব্যবহার করুন।",
+        "Sales Pitch": "প্ররোচিতভাবে লিখুন, যেন আপনি একজন দক্ষ RM ক্লায়েন্টকে বিনিয়োগে উৎসাহ দিচ্ছেন। আবেগ, আস্থা ও উদ্দীপনা যোগ করুন।"
+    }
+
     rules = [
         "ভাষা: খাঁটি বাংলা।",
-        "দৈর্ঘ্য: ৩৫০–৬০০ শব্দ; উদাহরণ ও বাস্তব প্রেক্ষাপটসহ।",
-        "পণ্য-তথ্য ব্লক হুবহু রাখুন; কোনো পরিবর্তন নয়।"
+        "দৈর্ঘ্য: ৩৫০–৬০০ শব্দ।",
+        "পণ্য-তথ্য ব্লক হুবহু রাখুন; কোনো পরিবর্তন নয়।",
+        tone_instructions.get(tone, "বিস্তারিতভাবে লিখুন।")
     ]
-    prompt = f"""আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড RM।
+
+    prompt = f"""
+আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড রিলেশনশিপ ম্যানেজার (RM)।
+আপনার কাজ হলো ক্লায়েন্টের বিনিয়োগের প্রয়োজন অনুযায়ী ব্যাখ্যামূলক ও আস্থাজনক স্ক্রিপ্ট তৈরি করা।
+
 উদাহরণ:
 {ex}
+
 {_facts_block(product, include_facts)}
+
 নির্দেশনা:
 {chr(10).join(rules)}
+
 ইনপুট:
 - ক্লায়েন্ট টাইপ: {client_type}
 - পণ্য: {product}
-- সময়সীমা: {horizon}
-- ঝুঁকি: {risk}
-- নোট: {extra}
-আউটপুট (Bangla স্ক্রিপ্ট):"""
-    return prompt
+- বিনিয়োগ সময়সীমা: {horizon}
+- ঝুঁকির মানসিকতা: {risk}
+- অতিরিক্ত নোট: {extra}
 
-def generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts):
-    prompt = build_prompt(ct, prod, horizon, risk, extra, include_facts)
+আউটপুট:
+একটি পূর্ণাঙ্গ, প্ররোচিত ও পেশাদার বাংলা স্ক্রিপ্ট দিন যা তথ্যের সঠিকতা বজায় রাখে, কিন্তু উপস্থাপনাকে আকর্ষণীয় করে তোলে।
+"""
+    return prompt.strip()
+
+def generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts, tone):
+    prompt = build_prompt(ct, prod, horizon, risk, extra, tone, include_facts)
     params = dict(max_new_tokens=int(max_tok), temperature=float(temp),
                   top_p=0.95, top_k=50, repetition_penalty=1.05)
     res = gen(prompt, **params)[0]["generated_text"]
+
     if "পণ্য-তথ্য" not in res and include_facts:
         res += "\n\nপণ্য-তথ্য (হুবহু): " + facts_for(prod)
     res += "\n\nনোট: মিউচুয়াল ফান্ড বাজারনির্ভর; পূর্বের আয় ভবিষ্যতের নিশ্চয়তা নয়।"
     return res
 
-# ============ Loaders ============
+# ============ Google Sheet & Docx Loaders ============
 def _sheet_id_and_gid(url):
     s = url.strip()
     if "/" not in s and len(s) > 20: return s, "0"
     u = urlparse(s)
     parts = [p for p in u.path.split("/") if p]
-    sid = parts[3] if len(parts)>3 and parts[2]=="d" else parts[-1]
-    gid = parse_qs(u.query).get("gid",["0"])[0]
-    return sid,gid
+    sid = parts[3] if len(parts) > 3 and parts[2] == "d" else parts[-1]
+    gid = parse_qs(u.query).get("gid", ["0"])[0]
+    return sid, gid
 
 def load_gsheet(url):
-    sid,gid=_sheet_id_and_gid(url)
-    df=pd.read_csv(f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}")
+    sid, gid = _sheet_id_and_gid(url)
+    df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}")
     return df
 
 def load_docx(file_path):
     doc = Document(file_path)
-    lines=[p.text for p in doc.paragraphs]
+    lines = [p.text for p in doc.paragraphs]
     return "\n".join(lines)
 
 # ============ Streamlit App Layout ============
 st.set_page_config(page_title="AI Script Generator (Bangla)", layout="wide")
 
 st.title("🤖 AI Script Generator (Bangla)")
-st.caption("Generate investor-facing call scripts with product facts intact — by UCB AML")
+st.caption("Generate elaborated, persuasive investor-facing scripts — by UCB AML")
 
 with st.sidebar:
     st.header("⚙️ Controls")
     ct = st.selectbox("ক্লায়েন্ট টাইপ", CLIENT_TYPES)
     prod = st.selectbox("পণ্য/ফোকাস", [x["product"] for x in SAMPLES[ct]])
-    horizon = st.selectbox("সময়সীমা", ["৬–১২ মাস","১–৩ বছর","৩+ বছর"])
-    risk = st.radio("ঝুঁকি", ["কম","মধ্যম","উচ্চ"], horizontal=True)
+    horizon = st.selectbox("সময়সীমা", ["৬–১২ মাস", "১–৩ বছর", "৩+ বছর"])
+    risk = st.radio("ঝুঁকি", ["কম", "মধ্যম", "উচ্চ"], horizontal=True)
     extra = st.text_area("অতিরিক্ত নোট", "SIP অগ্রাধিকার, শরীয়াহ পছন্দ ইত্যাদি")
-    temp = st.slider("Temperature", 0.3, 1.5, 0.8, 0.05)
-    max_tok = st.slider("Max tokens", 200, 900, 500, 50)
+    tone = st.selectbox("Script Tone", ["Elaborated", "Factual", "Sales Pitch"])
+    temp = st.slider("Temperature", 0.3, 1.5, 0.9, 0.05)
+    max_tok = st.slider("Max tokens", 300, 900, 600, 50)
     include_facts = st.checkbox("পণ্য-তথ্য যোগ করুন (হুবহু)", value=True)
 
-st.markdown("### ✨ Script Output")
+st.markdown("### ✨ Generated Script")
 if st.button("Generate Script"):
-    with st.spinner("AI generating..."):
-        output = generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts)
+    with st.spinner("AI generating your script..."):
+        output = generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts, tone)
         st.text_area("Generated Script", output, height=600)
         st.download_button("⬇️ Download .txt", output.encode("utf-8"), "script.txt")
 
@@ -179,5 +201,4 @@ with col2:
             st.error(f"Failed: {e}")
 
 st.markdown("---")
-st.caption("© UCB Asset Management Ltd | For internal demo and training use")
-
+st.caption("© UCB Asset Management Ltd | Internal demo & training use")
