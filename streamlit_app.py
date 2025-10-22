@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-AI Script Generator (Bangla) — Streamlit version
-Author: UCB Asset Management (UCB AML)
+AI Script Generator (Bangla) — External-only (no in-code samples)
+- Style exemplars: Google Doc (ID or link) -> DOCX export -> extracted paragraphs
+- Intent/Product samples: Google Sheet (ID or link) -> CSV export -> (intent, product, script)
+- Elaborated, varied generation with anti-copy & no-facts-echo
 """
 
-import os, re
+import os, re, io, time, random, difflib, requests
 import pandas as pd
 import streamlit as st
 from urllib.parse import urlparse, parse_qs
@@ -12,99 +14,19 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from docx import Document
 import gdown
 
-# --------------------------------------------
-# Utility
-# --------------------------------------------
-def _paragraphize(txt: str) -> str:
-    if not isinstance(txt, str): return ""
-    txt = re.sub(r'(?m)^\s*[•\-\u2022]+\s*', '', txt)   # bullets
-    txt = re.sub(r'(?m)^\s*\d+\.\s*', '', txt)          # 1. 2. 3.
-    txt = txt.replace('— — —', ' ')
-    txt = re.sub(r'\n{3,}', '\n\n', txt)
-    return txt.strip()
+# =========================
+# 🔧 OPTIONAL CONFIG (can leave blank and use the UI)
+# =========================
+MASTER_DOC_ID   = ""   # e.g. "1AbCdEfG..." (Google Doc ID) — leave "" to supply in UI
+MASTER_DOC_LINK = ""   # e.g. full GDoc link OR a direct .docx URL — leave "" to supply in UI
+GSHEET_ID       = ""   # e.g. "1Xyz..." (Google Sheet ID) — leave "" to supply in UI
+GSHEET_LINK     = ""   # e.g. full Google Sheet link — leave "" to supply in UI
+GSHEET_GID      = "0"  # Sheet tab gid (if using GSHEET_ID)
+MODEL_NAME      = "google/flan-t5-small"  # lightweight for Streamlit Cloud / Py3.13
 
-def _len_ok(s: str, n: int = 280) -> bool:
-    return bool(s and len(s) >= n)
-
-# --------------------------------------------
-# Defaults (will be overwritten by Google Sheet if you load it)
-# --------------------------------------------
-# --------------------------------------------
-# Defaults (now seeded from the uploaded master script)
-# --------------------------------------------
-SAMPLES_DEFAULT = {
-   
-    # Intent 1: নিরাপদ/স্থিতিশীল আয় (সঞ্চয়পত্রের বিকল্প)
-    "নিরাপদ ও স্থিতিশীল আয় (সঞ্চয়পত্রের বিকল্প)": [{
-        "product": "UCB Income Plus Fund",
-        "script": """আপনারা যারা নিরাপদ বিনিয়োগ পছন্দ করেন এবং কষ্টার্জিত টাকায় ঝুঁকি কম রাখতে চান, তাদের জন্য ‘UCB Income Plus Fund’ বাস্তবসম্মত সমাধান। ফান্ডের বড় অংশ সরকারি ট্রেজারি বিল/বন্ডে বিনিয়োগ হওয়ায় ডিফল্টের ঝুঁকি কম—অনেকটা সঞ্চয়পত্রের মতো নিরাপত্তা, তবে কিছু গুরুত্বপূর্ণ সুবিধা বাড়তি।
-
-উদাহরণস্বরূপ:
-• আয়ের সম্ভাবনা: সুদের পরিবেশ ও মার্কেট কন্ডিশন অনুযায়ী আকর্ষণীয় নেট রিটার্নের সম্ভাবনা থাকে (গ্যারান্টি নয়)।
-• কোনো স্ল্যাব নেই: ইউনিটভিত্তিক একই হার—বড়/ছোট বিনিয়োগে হার আলাদা হয় না।
-• তারল্য: সাধারণত ১০০ দিন পর রিডেম্পশনে চার্জ থাকে না—প্রয়োজন হলে সহজে তুলতে পারেন।
-• কর-সুবিধা: প্রযোজ্য বিধি অনুযায়ী আয়কর রিবেট পাওয়ার সম্ভাবনা থাকে।
-
-আমরা প্রথমে আপনার প্রয়োজনটা ম্যাপ করি—মাসিক আয়ের টার্গেট, কতদিন রাখতে চান, এবং ব্যাংক অ্যাকাউন্ট/BEFTN এর মাধ্যমে কীভাবে সহজে SIP বা লাম্পসাম সেটআপ করবেন। চাইলে শুরু থেকে শেষ পর্যন্ত আমি ডকুমেন্টেশন, KYC এবং রিডেম্পশন প্রসেস বুঝিয়ে দেব।
-
-শেষে CTA: আপনার সুবিধা হলে আজই ন্যূনতম অংকে শুরু করতে পারেন, পরে ধীরে ধীরে বাড়াতে পারবেন। চাইলে আমি এখনই ব্রোশিওর/ফ্যাক্টশিট ইমেইল/হোয়াটসঅ্যাপে পাঠিয়ে দিচ্ছি এবং একটি ফলো-আপ কল শিডিউল করছি।"""
-    }],
-
-    # Intent 2: দীর্ঘমেয়াদে সম্পদ গঠন (ইকুইটি-অরিয়েন্টেড)
-    "দীর্ঘমেয়াদে সম্পদ গঠন (ইকুইটি-অরিয়েন্টেড)": [{
-        "product": "UCB AML First Mutual Fund",
-        "script": """যারা শেয়ারবাজারের প্রবৃদ্ধির সাথে থেকে দীর্ঘমেয়াদে সম্পদ গড়তে চান, তাদের জন্য ‘UCB AML First Mutual Fund’ একটি কার্যকর বিকল্প। আমরা আপনার হয়ে গবেষণাভিত্তিকভাবে মানসম্পন্ন/ব্লু-চিপ কোম্পানিতে বিনিয়োগ করি—যেমন টেকসই নগদপ্রবাহ, শক্তিশালী ব্যালান্স শিট ও প্রতিযোগিতামূলক সুবিধা থাকা ব্যবসা।
-
-এখানে বোঝার বিষয়:
-• স্বল্পমেয়াদে ওঠানামা স্বাভাবিক; তাই সময়সীমা ৩–৫ বছর বা তদূর্ধ্ব হলে সম্ভাব্য ফল ভালো দেখা যায় (গ্যারান্টি নয়)।
-• নিয়মিত SIP বাজারের ভোলাটিলিটি গড়িয়ে দেয়; দামের উত্থান-পতনে গড় ক্রয়মূল্য নিয়ন্ত্রিত হয়।
-• পোর্টফোলিও রিভিউ: লাইফ-ইভেন্ট বা বাজার পরিবর্তনে আমরা পুনর্বিন্যাস করি—ঝুঁকি/লক্ষ্য অনুযায়ী।
-
-কীভাবে শুরু করবেন: (১) KYC/ফর্ম, (২) ব্যাংক ট্রান্সফার বা SIP standing instruction, (৩) কনফার্মেশন ও ট্রান্স্যাকশন স্টেটমেন্ট, (৪) ত্রৈমাসিক রিভিউ কল। আজ কি আমরা একটি ছোট SIP (ধরা যাক ৳৩–১০ হাজার/মাস) দিয়ে শুরু করি? পরে আপনার সুবিধামত বাড়ানো যাবে।"""
-    }],
-
-    # Intent 3: শরীয়াহসম্মত/হালাল বিনিয়োগ
-    "শরীয়াহসম্মত হালাল বিনিয়োগ": [{
-        "product": "UCB Taqwa Growth Fund",
-        "script": """আপনি যদি ইসলামী শরীয়াহ নীতিমালা মেনে হালাল উপায়ে বিনিয়োগ করতে চান, ‘UCB Taqwa Growth Fund’ সেই উদ্দেশ্যে তৈরি। ফান্ডটি কেবল শরীয়াহ-সম্মত কোম্পানিতে বিনিয়োগ করে; সুদভিত্তিক ব্যাংক/তামাক ইত্যাদি সেক্টর এড়ানো হয়। 
-
-আস্থা বাড়ায় যে বিষয়গুলো:
-• শরীয়াহ স্ক্রিনিং: ব্যবসার প্রকৃতি, ঋণ অনুপাত ইত্যাদি মানদণ্ড পূরণ করেই নির্বাচন।
-• ডিভিডেন্ড পিউরিফিকেশন: অনিচ্ছাকৃত আয়ের অংশ দাতব্যে প্রদান—আয়কে হালাল রাখতে।
-• দীর্ঘমেয়াদে প্রবৃদ্ধি-কেন্দ্রিক ভাবনা; স্বল্পমেয়াদে ওঠানামা স্বাভাবিক, তাই লক্ষ্য/সময়সীমা গুরুত্বপূর্ণ।
-
-অনবোর্ডিং সহজ: ন্যূনতম ইউনিট ক্রয়, BEFTN/ব্যাংক ট্রান্সফার, এবং নিয়মিত স্টেটমেন্ট। ইচ্ছা হলে আমি এখনই ফান্ডের শরীয়াহ বোর্ড নীতিমালা ও ফ্যাক্টশিট পাঠিয়ে দেই—তারপর আপনার সুবিধামতো একটি বিস্তারিত আলোচনার স্লট ঠিক করি।"""
-    }],
-
-    # Intent 4: FAQ/হ্যান্ডওভার/CTA স্টাইলে
-    "FAQ / হ্যান্ডওভার / CTA ফ্লো": [{
-        "product": "—",
-        "script": """সাধারণ প্রশ্নের উত্তর:
-• শুরুতে কী লাগবে? — NID (আপনি ও নমিনি), ছবি, ব্যাংক চেক পাতার ছবি, ফর্ম; দরকার হলে BO একাউন্ট আমরা খুলতে সহায়তা করি।
-• টাকা তুলবো কীভাবে? — রিডেম্পশন ফর্ম ইমেইল/হোয়াটসঅ্যাপে দিলেই হবে; আমরা আপনার ব্যাংক অ্যাকাউন্টে পাঠাই। Income Plus-এ সাধারণত ১০০ দিন পর চার্জ থাকে না (টার্মস প্রযোজ্য)।
-• BO একাউন্ট নেই? — সমস্যা নয়; পার্টনার ব্রোকারেজের মাধ্যমে খোলায় সহায়তা করি।
-
-হ্যান্ডওভার (প্রয়োজনে): “আপনার প্রশ্নটি গুরুত্বপূর্ণ। বিষয়টি সর্বোত্তমভাবে সমাধানের জন্য আমি এখনই আপনাকে আমাদের সিনিয়র ইনভেস্টমেন্ট স্পেশালিস্ট/রিলেশনশিপ ম্যানেজারের সাথে যুক্ত করছি।”
-
-CTA/পরবর্তী পদক্ষেপ: “আপনার অনুমতি পেলে আমি এখনই ব্রোশিওর/লিংক পাঠাচ্ছি। আজ কি আমরা একটি ছোট SIP দিয়ে শুরু করবো, নাকি লাম্পসাম? আপনার জন্য কখন একটি ফলো-আপ কল সুবিধাজনক?”"""
-    }]
-}
-
-
-# Put samples into session state so we can replace them at runtime
-if "SAMPLES" not in st.session_state:
-    st.session_state.SAMPLES = SAMPLES_DEFAULT
-
-def client_types():
-    return list(st.session_state.SAMPLES.keys())
-
-def products_for(ct: str):
-    rows = st.session_state.SAMPLES.get(ct, [])
-    return [r.get("product","—") for r in rows] or ["—"]
-
-# --------------------------------------------
-# Product facts (static for now)
-# --------------------------------------------
+# =========================
+# Product facts (verbatim at the end)
+# =========================
 PRODUCT_FACTS = {
     "UCB Income Plus Fund": {
         "indicative_return": "বর্তমান বাজারে ইঙ্গিতমাত্র নেট ~৯–১১% (গ্যারান্টি নয়)",
@@ -119,8 +41,43 @@ PRODUCT_FACTS = {
         "sip": "SIP: ন্যূনতম ৳৩,০০০/মাস",
         "non_sip": "Non-SIP: ন্যূনতম ৳১০,০০০",
         "tax": "প্রযোজ্য হলে আয়কর রিবেট"
+    },
+    "UCB Taqwa Growth Fund": {
+        "indicative_return": "শরীয়াহসম্মত ইকুইটি—দীর্ঘমেয়াদে বাজারনির্ভর",
+        "exit_load": "স্কিম তথ্যপত্র অনুযায়ী এক্সিট লোড",
+        "sip": "SIP: ন্যূনতম ৳৩,০০০/মাস",
+        "non_sip": "Non-SIP: ন্যূনতম 500 unit",
+        "tax": "শরীয়াহ অনুগত; প্রযোজ্য ক্ষেত্রে কর-সুবিধা"
     }
 }
+
+# =========================
+# Utils
+# =========================
+def _paragraphize(txt: str) -> str:
+    if not isinstance(txt, str): return ""
+    txt = re.sub(r'(?m)^\s*[•\-\u2022]+\s*', '', txt)  # bullets
+    txt = re.sub(r'(?m)^\s*\d+\.\s*', '', txt)         # 1. 2. 3.
+    txt = txt.replace('— — —', ' ')
+    txt = re.sub(r'\n{3,}', '\n\n', txt)
+    return txt.strip()
+
+def _len_ok(s: str, n: int = 420) -> bool:
+    return bool(s and len(s) >= n)
+
+def _similar(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+def _sheet_id_and_gid(url_or_id: str):
+    s = (url_or_id or "").strip()
+    if "/" not in s and len(s) > 20:  # pure ID
+        return s, "0"
+    u = urlparse(s)
+    parts = [p for p in u.path.split("/") if p]
+    sid = parts[3] if len(parts) > 3 and parts[2] == "d" else parts[-1]
+    gid = parse_qs(u.query).get("gid", ["0"])[0]
+    return sid, gid
+
 def facts_for(product: str) -> str:
     f = PRODUCT_FACTS.get(product or "", {})
     if not f: return ""
@@ -130,11 +87,68 @@ def facts_for(product: str) -> str:
         f"{f['sip']}", f"{f['non_sip']}", f"{f['tax']}"
     ])
 
-# --------------------------------------------
-# Model
-# --------------------------------------------
-MODEL_NAME = "google/flan-t5-small"  # small = faster on Streamlit Cloud
+# =========================
+# External loaders (Doc/Sheet)
+# =========================
+def download_docx_from_gdoc_id(doc_id: str, out_path: str) -> str:
+    url = f"https://docs.google.com/document/d/{doc_id}/export?format=docx"
+    return gdown.download(url, out_path, quiet=True)
 
+def download_docx_from_link(link: str, out_path: str) -> str:
+    # Convert Google Doc view link to export if needed
+    if "docs.google.com/document/d/" in link and "export?format=docx" not in link:
+        try:
+            doc_id = link.split("/document/d/")[1].split("/")[0]
+            link = f"https://docs.google.com/document/d/{doc_id}/export?format=docx"
+        except Exception:
+            pass
+    r = requests.get(link, timeout=30)
+    r.raise_for_status()
+    with open(out_path, "wb") as f:
+        f.write(r.content)
+    return out_path
+
+def extract_style_shots_from_docx(doc_path: str, max_shots: int = 4):
+    if not os.path.exists(doc_path): return []
+    doc = Document(doc_path)
+    paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    cleaned = []
+    for p in paragraphs:
+        pp = _paragraphize(p)
+        if len(pp) >= 180 and not re.match(r"^[•\-\d]+", pp):
+            cleaned.append(pp)
+    if not cleaned: return []
+    if len(cleaned) <= max_shots: return cleaned
+    step = max(1, len(cleaned)//max_shots)
+    return [cleaned[i] for i in range(0, len(cleaned), step)][:max_shots]
+
+def load_gsheet_df(url_or_id: str, gid_hint: str = "0") -> pd.DataFrame:
+    sid, gid = _sheet_id_and_gid(url_or_id)
+    gid = gid or gid_hint or "0"
+    csv_url = f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}"
+    return pd.read_csv(csv_url)
+
+def samples_from_df(df: pd.DataFrame):
+    cols = {c.lower().strip(): c for c in df.columns}
+    need = {"intent", "product", "script"}
+    if not need.issubset(set(cols.keys())):
+        raise ValueError(f"Sheet must contain columns: {sorted(need)}. Found: {list(df.columns)}")
+    recs = df[[cols["intent"], cols["product"], cols["script"]]].fillna("")
+    samples = {}
+    for _, row in recs.iterrows():
+        intent  = str(row[cols["intent"]]).strip()
+        product = str(row[cols["product"]]).strip() or "—"
+        script  = _paragraphize(str(row[cols["script"]]))
+        if not intent or not script:
+            continue
+        samples.setdefault(intent, []).append({"product": product, "script": script})
+    if not samples:
+        raise ValueError("No valid rows (need non-empty intent + script).")
+    return samples
+
+# =========================
+# Model
+# =========================
 @st.cache_resource(show_spinner=False)
 def load_model():
     tok = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -143,38 +157,51 @@ def load_model():
 
 gen = load_model()
 
-# --------------------------------------------
-# Prompting (two-pass: body then facts)
-# --------------------------------------------
+# =========================
+# Prompting (two-pass + anti-copy + variability)
+# =========================
 def _facts_block(product: str, include: bool) -> str:
     if not include: return ""
     ftxt = facts_for(product)
     return f"\n[FACTS]\n{ftxt}\n[/FACTS]\n" if ftxt else ""
 
-def build_body_prompt(client_type, product, horizon, risk, extra, tone, include_facts=True):
-    shots = st.session_state.SAMPLES.get(client_type, [])
-    ex = _paragraphize(shots[0]["script"]) if shots else ""
+def pick_style_shots(style_shots: list, k: int = 3) -> list:
+    """Randomly rotate which style exemplars are used to avoid sameness."""
+    if not style_shots:
+        return []
+    k = max(1, min(k, len(style_shots)))
+    return random.sample(style_shots, k)
+
+def build_body_prompt(selected_shots, intent_sample, product, client_type, horizon, risk, extra, tone, include_facts=True, nonce=""):
+    styled = ""
+    if selected_shots:
+        blocks = [f"উদাহরণ {i} (স্টাইল মাত্র; কপি করবেন না):\n{s}\n" for i, s in enumerate(selected_shots, 1)]
+        styled = "\n".join(blocks)
+    ex = _paragraphize(intent_sample or "")
 
     tone_rule = {
         "Factual": "সংক্ষিপ্ত, তথ্যনির্ভর ও নিরপেক্ষ থাকুন।",
-        "Elaborated": "ব্যাখ্যামূলক, সহানুভূতিশীল ও শিক্ষামূলক টোন ব্যবহার করুন; বাস্তব উদাহরণ দিন।",
-        "Sales Pitch": "আস্থাজনক ও প্ররোচিত টোন রাখুন; গ্রাহকের লাভ ও সুবিধা স্পষ্ট করুন।"
+        "Elaborated": "ব্যাখ্যামূলক, সহানুভূতিশীল ও শিক্ষামূলক; ১–২টি উদাহরণ/সিনারিও দিন।",
+        "Sales Pitch": "আস্থাজনক ও প্ররোচিত; গ্রাহকের সুবিধা স্পষ্ট করুন, তবু বাড়াবাড়ি নয়।"
     }.get(tone, "ব্যাখ্যামূলক টোন।")
 
     rules = [
         "ভাষা: খাঁটি বাংলা; কথোপকথনমূলক প্যারাগ্রাফ।",
-        "দৈর্ঘ্য: কমপক্ষে ৩৫০–৬০০ শব্দ।",
-        "কাঠামো: (১) শুভেচ্ছা+ডিসকভারি (২) পণ্য কীভাবে কাজ করে (৩) ঝুঁকি-রিটার্ন ব্যাখ্যা (৪) উদাহরণ/সিনারিও (৫) কীভাবে শুরু করবেন—ধাপে ধাপে (৬) CTA।",
-        "গুরুত্বপূর্ণ: নিচের [FACTS] তথ্যগুলো কেবল রেফারেন্স; বডিতে [FACTS] ব্লকটি প্রিন্ট করবেন না।",
-        "‘গ্যারান্টি’ বা ‘ঝুঁকি নেই’ ধরনের দাবি করা যাবে না।",
+        "দৈর্ঘ্য: ৪৫০–৭৫০ শব্দ; একাধিক প্যারাগ্রাফ।",
+        "কাঠামো: শুভেচ্ছা+ডিসকভারি → প্রোডাক্ট ব্যাখ্যা → ঝুঁকি-রিটার্ন → উদাহরণ/সিনারিও → শুরু করার ধাপ → CTA।",
+        "নিচের [FACTS] ব্লক কেবল রেফারেন্স; কোনো অবস্থায় [FACTS]/[/FACTS] বা 'পণ্য-তথ্য' শব্দগুচ্ছ বডিতে লিখবেন না।",
+        "‘গ্যারান্টি’ বা ‘ঝুঁকি নেই’ ধরনের দাবি করবেন না।",
+        "বাক্য/অনুচ্ছেদ কপি করা যাবে না—নিজস্ব শব্দে নতুনভাবে লিখতে হবে।",
         tone_rule,
+        f"ভিন্ন ভঙ্গিতে উপস্থাপন করুন (রূপান্তর আইডি: {nonce})."
     ]
 
     prompt = f"""
-আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড RM। নিচের উদাহরণের স্টাইল মাথায় রেখে একটি পূর্ণাঙ্গ বাংলা স্ক্রিপ্ট লিখুন।
+আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড RM। নিচের উদাহরণগুলোর স্টাইল অনুসরণ করুন কিন্তু কপি করবেন না—নিজস্ব শব্দে, নতুন বাক্য গঠন ব্যবহার করে একটি পূর্ণাঙ্গ বাংলা স্ক্রিপ্ট লিখুন।
 
-উদাহরণ (স্টাইল মাত্র):
-{ex}
+{styled}
+
+{"অতিরিক্ত স্টাইল হিন্ট (কপি নয়):\n"+ex if ex else ""}
 
 {_facts_block(product, include_facts)}
 
@@ -189,149 +216,241 @@ def build_body_prompt(client_type, product, horizon, risk, extra, tone, include_
 - নোট: {extra}
 
 আউটপুট:
-শুধু কথোপকথনমূলক বডি লিখুন; "পণ্য-তথ্য" অংশটি এখন লিখবেন না।
+শুধু কথোপকথনমূলক বডি লিখুন; 'পণ্য-তথ্য' অংশটি এখন লিখবেন না।
 """.strip()
     return prompt
 
-def _fallback_body(ct, prod, horizon, risk, extra):
+def _fallback_body(prod, horizon):
     greeting = "আসসালামু আলাইকুম। আমি ইউসিবি অ্যাসেট ম্যানেজমেন্ট থেকে বলছি।"
-    discovery = "আপনার লক্ষ্য, সময়সীমা ও ঝুঁকি পছন্দ বুঝে নিতে চাই—তারপর উপযুক্ত পরিকল্পনা সাজাবো।"
-    explain = f"{prod} নিয়ে সংক্ষেপে বলি—এই ফান্ডটি পেশাদার টিম দ্বারা পরিচালিত হয় এবং ঝুঁকি-রিটার্নের ভারসাম্য রাখার চেষ্টা করে।"
-    risk_note = "বাজারে ওঠানামা থাকেই; স্বল্পমেয়াদে ভোলাটিলিটি সম্ভব, কিন্তু পরিকল্পিতভাবে বিনিয়োগ করলে লক্ষ্যপূরণ সহজ হয়।"
-    steps = "শুরু করার ধাপ: (১) KYC/ফর্ম পূরণ (২) ব্যাংক ট্রান্সফার/SIP সেটআপ (৩) কনফার্মেশন (৪) পর্যায়ক্রমে রিভিউ।"
-    cta = "আপনি চাইলে আজই SIP শুরু করতে পারি—আমি সব ডকুমেন্ট/লিংক পাঠিয়ে দিচ্ছি।"
+    discovery = "আপনার লক্ষ্য, সময়সীমা ও ঝুঁকি পছন্দ বুঝে নিয়ে উপযুক্ত পরিকল্পনা সাজাবো।"
+    explain = f"{prod} সম্পর্কে সংক্ষেপে—পেশাদার টিম ঝুঁকি–রিটার্নের ভারসাম্য বজায় রেখে বিনিয়োগ করে; {horizon} দিগন্তে চিন্তা করলে সম্ভাবনার পরিসর পরিষ্কার হয়।"
+    risk_note = "বাজারে ওঠানামা স্বাভাবিক; পরিকল্পিত SIP/লাম্পসাম মিলিয়ে চললে লক্ষ্যপূরণ সহজ হয় (গ্যারান্টি নয়)।"
+    steps = "ধাপ: (১) KYC/ফর্ম (২) ব্যাংক ট্রান্সফার বা SIP সেটআপ (৩) কনফার্মেশন ও স্টেটমেন্ট (৪) রিভিউ।"
+    cta = "আজ কি ন্যূনতম অংকে শুরু করবো? আমি এখনই ব্রোশিওর/লিংক পাঠিয়ে দিচ্ছি এবং একটি ফলো-আপ কল সেট করছি।"
     return "\n\n".join([greeting, discovery, explain, risk_note, steps, cta])
 
-def generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts, tone):
-    # Pass A: write body (facts hidden from output)
-    body_prompt = build_body_prompt(ct, prod, horizon, risk, extra, tone, include_facts)
-    params = dict(max_new_tokens=int(max_tok), temperature=float(temp),
-                  top_p=0.95, top_k=50, repetition_penalty=1.05)
-    try:
-        body = gen(body_prompt, **params)[0]["generated_text"].strip()
-    except Exception:
-        body = ""
-    if "[FACTS]" in body or "পণ্য-তথ্য" in body or not _len_ok(body):
-        body = _fallback_body(ct, prod, horizon, risk, extra)
+def _too_similar_to_any(body: str, shots: list, thresh: float = 0.78) -> bool:
+    if not body or not shots: return False
+    return any(_similar(body, s) >= thresh for s in shots)
+
+def _too_similar_to_recent(body: str, history: list, thresh: float = 0.76) -> bool:
+    for prev in history[-5:]:
+        if _similar(body, prev) >= thresh:
+            return True
+    return False
+
+def generate_script(style_shots, intent_sample, ct, prod, horizon, risk, extra, temp, max_tok, include_facts, tone):
+    def _run(prompt, temperature):
+        params = dict(
+            max_new_tokens=int(max_tok),
+            temperature=float(temperature),
+            top_p=0.92,
+            top_k=60,
+            do_sample=True,
+            repetition_penalty=1.12,
+            no_repeat_ngram_size=4
+        )
+        return gen(prompt, **params)[0]["generated_text"].strip()
+
+    # rotate style exemplars + add nonce per run
+    selected = pick_style_shots(style_shots, k=min(3, len(style_shots) or 1))
+    nonce = f"{int(time.time()*1000) % 100000}-{random.randint(100,999)}"
+
+    body_prompt = build_body_prompt(selected, intent_sample, prod, ct, horizon, risk, extra, tone, include_facts, nonce=nonce)
+
+    tries = 0
+    body = ""
+    while tries < 2:
+        tries += 1
+        try:
+            body = _run(body_prompt, temp if tries == 1 else max(1.05, float(temp) + 0.25))
+        except Exception:
+            body = ""
+
+        bad = (
+            not _len_ok(body) or
+            "[FACTS]" in body or "[/FACTS]" in body or
+            "পণ্য-তথ্য" in body or
+            _too_similar_to_any(body, (style_shots or []) + ([intent_sample] if intent_sample else []), 0.78) or
+            _too_similar_to_recent(body, st.session_state.GEN_HISTORY, 0.76)
+        )
+        if not bad:
+            break
+
+        body_prompt += "\n\nপুনর্লিখন নির্দেশ: আগের সংস্করণ থেকে আলাদা কাঠামো, অনুচ্ছেদ ও উদাহরণ ব্যবহার করুন—ভিন্ন শব্দচয়ন ও বাক্যগঠন বজায় রাখুন।"
+
+    if (not _len_ok(body) or
+        "[FACTS]" in body or "[/FACTS]" in body or
+        "পণ্য-তথ্য" in body or
+        _too_similar_to_any(body, (style_shots or []) + ([intent_sample] if intent_sample else []), 0.78) or
+        _too_similar_to_recent(body, st.session_state.GEN_HISTORY, 0.76)):
+        body = _fallback_body(prod, horizon)
+
     body = re.sub(r"\[/?FACTS\]", "", body, flags=re.I)
 
-    # Pass B: append facts verbatim + disclaimer
+    # Append facts & disclaimer (verbatim)
     tail = ""
     if include_facts:
         tail += "\n\nপণ্য-তথ্য (হুবহু): " + facts_for(prod)
     tail += "\n\nনোট: মিউচুয়াল ফান্ড বাজারনির্ভর; পূর্বের আয় ভবিষ্যতের নিশ্চয়তা নয়।"
-    return body.strip() + tail
 
-# --------------------------------------------
-# Google Sheet / Doc helpers
-# --------------------------------------------
-def _sheet_id_and_gid(url_or_id: str):
-    s = (url_or_id or "").strip()
-    if "/" not in s and len(s) > 20:
-        return s, "0"
-    u = urlparse(s)
-    parts = [p for p in u.path.split("/") if p]
-    sid = parts[3] if len(parts) > 3 and parts[2] == "d" else parts[-1]
-    gid = parse_qs(u.query).get("gid", ["0"])[0]
-    return sid, gid
+    final = (body.strip() + tail)
 
-def load_gsheet(url_or_id: str) -> pd.DataFrame:
-    sid, gid = _sheet_id_and_gid(url_or_id)
-    return pd.read_csv(f"https://docs.google.com/spreadsheets/d/{sid}/export?format=csv&gid={gid}")
+    # remember this body so the next run avoids repeating it
+    st.session_state.GEN_HISTORY.append(body.strip())
+    if len(st.session_state.GEN_HISTORY) > 6:
+        st.session_state.GEN_HISTORY = st.session_state.GEN_HISTORY[-6:]
 
-def apply_samples_from_df(df: pd.DataFrame):
-    """
-    Accepts a DataFrame with headers: intent, product, script.
-    Groups rows by intent; allows multiple products/scripts per intent.
-    Updates st.session_state.SAMPLES and triggers a rerun.
-    """
-    cols = {c.lower().strip(): c for c in df.columns}
-    need = {"intent", "product", "script"}
-    if not need.issubset(set(cols.keys())):
-        raise ValueError(f"Sheet must contain columns: {sorted(need)}. Found: {list(df.columns)}")
+    return final
 
-    # Normalize and build structure
-    recs = df[[cols["intent"], cols["product"], cols["script"]]].fillna("")
-    samples = {}
-    for _, row in recs.iterrows():
-        intent = str(row[cols["intent"]]).strip()
-        product = str(row[cols["product"]]).strip() or "—"
-        script = _paragraphize(str(row[cols["script"]]))
-        if not intent or not script:
-            continue
-        samples.setdefault(intent, []).append({"product": product, "script": script})
+# =========================
+# Session state init
+# =========================
+if "STYLE_SHOTS" not in st.session_state: st.session_state.STYLE_SHOTS = []
+if "SAMPLES" not in st.session_state:     st.session_state.SAMPLES = {}
+if "GEN_HISTORY" not in st.session_state: st.session_state.GEN_HISTORY = []
+# --- previews for UX ---
+if "STYLE_PREVIEW" not in st.session_state: st.session_state.STYLE_PREVIEW = ""
+if "SHEET_PREVIEW" not in st.session_state: st.session_state.SHEET_PREVIEW = {"intent": "", "product": "", "script": ""}
 
-    if not samples:
-        raise ValueError("No valid rows found (need non-empty intent and script).")
+def ensure_style_loaded(doc_id: str, doc_link: str):
+    out_path = "master_style.docx"
+    if doc_id:
+        download_docx_from_gdoc_id(doc_id, out_path)
+    elif doc_link:
+        download_docx_from_link(doc_link, out_path)
+    else:
+        return False
+    if os.path.exists(out_path):
+        st.session_state.STYLE_SHOTS = extract_style_shots_from_docx(out_path, max_shots=4)
+        return bool(st.session_state.STYLE_SHOTS)
+    return False
 
-    st.session_state.SAMPLES = samples
-    # Reset any cached selections so the sidebar updates cleanly
-    st.session_state.pop("ct_sel", None)
-    st.session_state.pop("prod_sel", None)
-    st.success(f"Loaded {sum(len(v) for v in samples.values())} samples across {len(samples)} intents.")
-    st.rerun()
+def ensure_samples_loaded(sheet_id: str, sheet_link: str, gid: str = "0"):
+    if sheet_id:
+        df = load_gsheet_df(sheet_id, gid_hint=gid or "0")
+    elif sheet_link:
+        df = load_gsheet_df(sheet_link, gid_hint="0")
+    else:
+        return False
+    st.session_state.SAMPLES = samples_from_df(df)
+    return True
 
-def load_docx(file_path):
-    doc = Document(file_path)
-    return "\n".join(p.text for p in doc.paragraphs)
-
-# --------------------------------------------
+# =========================
 # UI
-# --------------------------------------------
+# =========================
 st.set_page_config(page_title="AI Script Generator (Bangla)", layout="wide")
-
 st.title("🤖 AI Script Generator (Bangla)")
-st.caption("Generate elaborated, persuasive investor-facing scripts — by UCB AML")
+st.caption("External-only: style from Google Doc, samples from Google Sheet")
+
+with st.expander("🔗 Connect your sources", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        doc_in = st.text_input("Google Doc ID or direct DOCX link", value=MASTER_DOC_ID or MASTER_DOC_LINK)
+        if st.button("Load Style (Docx)"):
+            with st.spinner("Fetching DOCX..."):
+                ok = ensure_style_loaded(
+                    doc_id=doc_in if "/" not in (doc_in or "") else "",
+                    doc_link=doc_in if "/" in (doc_in or "") else ""
+                )
+            if ok:
+                n = len(st.session_state.STYLE_SHOTS)
+                st.session_state.STYLE_PREVIEW = (st.session_state.STYLE_SHOTS[0] or "")[:400]
+                st.success(f"✅ Loaded {n} style paragraph{'s' if n>1 else ''}.")
+            else:
+                st.session_state.STYLE_PREVIEW = ""
+                st.error("❌ Failed to load style — ensure the Doc is shared: ‘Anyone with the link → Viewer’.")
+            st.rerun()
+    with c2:
+        sheet_in = st.text_input("Google Sheet ID or link (headers: intent, product, script)", value=GSHEET_ID or GSHEET_LINK)
+        gid_in   = st.text_input("Sheet gid (tab id, default 0)", value=GSHEET_GID or "0")
+        if st.button("Load Samples (Sheet)"):
+            with st.spinner("Fetching Sheet..."):
+                try:
+                    ok = ensure_samples_loaded(
+                        sheet_id=sheet_in if "/" not in (sheet_in or "") else "",
+                        sheet_link=sheet_in if "/" in (sheet_in or "") else "",
+                        gid=gid_in or "0"
+                    )
+                except Exception as e:
+                    ok = False
+                    st.error(f"❌ Error while loading sheet: {e}")
+            if ok:
+                total_rows = sum(len(v) for v in st.session_state.SAMPLES.values())
+                intents = len(st.session_state.SAMPLES)
+                first_intent = next(iter(st.session_state.SAMPLES.keys()))
+                first_row = st.session_state.SAMPLES[first_intent][0]
+                st.session_state.SHEET_PREVIEW = {
+                    "intent": first_intent,
+                    "product": first_row.get("product", ""),
+                    "script": (first_row.get("script", "") or "")[:400],
+                }
+                st.success(f"✅ Loaded {intents} intents / {total_rows} rows from sheet.")
+            else:
+                st.session_state.SHEET_PREVIEW = {"intent":"", "product":"", "script":""}
+                st.warning("⚠️ Could not load sheet — confirm link/ID and public sharing.")
+            st.rerun()
+
+# Status + previews
+st.info(f"Style shots: {len(st.session_state.STYLE_SHOTS)} | Intents: {len(st.session_state.SAMPLES)}")
+
+with st.expander("👀 Loaded content preview", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Master style (from Google Doc)**")
+        if st.session_state.STYLE_PREVIEW:
+            st.code(st.session_state.STYLE_PREVIEW, language="markdown")
+        else:
+            st.info("No style loaded yet.")
+    with c2:
+        st.markdown("**Sample row (from Google Sheet)**")
+        sp = st.session_state.SHEET_PREVIEW
+        if sp.get("intent"):
+            st.write(f"**Intent:** {sp['intent']}")
+            st.write(f"**Product:** {sp['product']}")
+            st.code(sp["script"], language="markdown")
+        else:
+            st.info("No sheet loaded yet.")
+
+# Controls (enabled only when both sources exist)
+can_generate = bool(st.session_state.STYLE_SHOTS and st.session_state.SAMPLES)
 
 with st.sidebar:
     st.header("⚙️ Controls")
-    # use keys so they get reset when samples are reloaded
-    ct = st.selectbox("ক্লায়েন্ট টাইপ", client_types(), key="ct_sel")
-    prod = st.selectbox("পণ্য/ফোকাস", products_for(ct), key="prod_sel")
+    if can_generate:
+        ct = st.selectbox("ক্লায়েন্ট টাইপ", list(st.session_state.SAMPLES.keys()))
+        products = [r.get("product","—") for r in st.session_state.SAMPLES.get(ct, [])]
+        prod = st.selectbox("পণ্য/ফোকাস", products or ["—"])
+        intent_sample = next((r.get("script","") for r in st.session_state.SAMPLES.get(ct, []) if r.get("product")==prod), "") \
+                        or st.session_state.SAMPLES.get(ct, [{}])[0].get("script","")
+    else:
+        ct = prod = intent_sample = ""
+
     horizon = st.selectbox("সময়সীমা", ["৬–১২ মাস","১–৩ বছর","৩+ বছর"])
     risk = st.radio("ঝুঁকি", ["কম","মধ্যম","উচ্চ"], horizontal=True)
     extra = st.text_area("অতিরিক্ত নোট", "SIP অগ্রাধিকার, শরীয়াহ পছন্দ ইত্যাদি")
     tone = st.selectbox("Script Tone", ["Elaborated","Factual","Sales Pitch"])
-    temp = st.slider("Temperature", 0.3, 1.5, 0.9, 0.05)
-    max_tok = st.slider("Max tokens", 300, 900, 600, 50)
+    temp = st.slider("Temperature", 0.3, 1.5, 0.95, 0.05)
+    max_tok = st.slider("Max tokens", 450, 900, 700, 50)
     include_facts = st.checkbox("পণ্য-তথ্য যোগ করুন (হুবহু)", value=True)
+    force_variant = st.checkbox("🔁 Force a fresh variant", value=False)
 
 st.markdown("### ✨ Generated Script")
-if st.button("Generate Script"):
+btn = st.button("Generate Script", disabled=not can_generate)
+if not can_generate:
+    st.warning("Connect both: a Google Doc (style) and a Google Sheet (samples) to enable generation.")
+
+if btn and can_generate:
     with st.spinner("AI generating your script..."):
-        output = generate_script(ct, prod, horizon, risk, extra, temp, max_tok, include_facts, tone)
-        st.text_area("Generated Script", output, height=600)
-        st.download_button("⬇️ Download .txt", output.encode("utf-8"), "script.txt")
+        out = generate_script(
+            style_shots=st.session_state.STYLE_SHOTS,
+            intent_sample=intent_sample,
+            ct=ct, prod=prod, horizon=horizon, risk=risk, extra=extra,
+            temp=(temp + 0.25 if force_variant else temp),
+            max_tok=max_tok, include_facts=include_facts, tone=tone
+        )
+        st.text_area("Generated Script", out, height=600)
+        st.download_button("⬇️ Download .txt", out.encode("utf-8"), "script.txt")
 
 st.markdown("---")
-st.markdown("#### 📥 Load Samples from Google Sheet or Doc (Optional)")
-
-col1, col2 = st.columns(2)
-with col1:
-    gsheet_url = st.text_input("Google Sheet URL / ID", placeholder="Paste a view link or file ID")
-    if st.button("Load from Google Sheet"):
-        try:
-            df = load_gsheet(gsheet_url)
-            st.write(df.head())
-            apply_samples_from_df(df)   # <-- THIS replaces SAMPLES and refreshes UI
-        except Exception as e:
-            st.error(f"Failed to load sheet: {e}")
-
-with col2:
-    gdoc_id = st.text_input("Google Doc ID")
-    if st.button("Load from Google Doc (.docx export)"):
-        try:
-            path = gdown.download(
-                f"https://docs.google.com/document/d/{gdoc_id}/export?format=docx",
-                "temp.docx", quiet=True
-            )
-            text = load_docx(path)
-            st.text_area("Doc Preview", text[:2000])
-            st.success("Google Doc loaded successfully.")
-        except Exception as e:
-            st.error(f"Failed: {e}")
-
-st.markdown("---")
-st.caption("© UCB Asset Management Ltd | Internal demo & training use")
-
-
+st.caption("© UCB Asset Management Ltd | External-data-driven — no in-code samples")
