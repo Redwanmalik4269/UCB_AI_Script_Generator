@@ -152,17 +152,18 @@ def samples_from_df(df: pd.DataFrame):
 import os
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
-MODEL_NAME = "google/flan-t5-small"  # lightweight and compatible for Streamlit Cloud
+MODEL_NAME = "google/flan-t5-small"  # lightweight and compatible for Cloud
 
 @st.cache_resource(show_spinner=False)
 def load_model():
-    # ✅ use_fast=False avoids 'tokenizers' wheel build that hangs on Python 3.13
+    # use slow tokenizer -> no 'tokenizers' build
     tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
     mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    # ✅ device=-1 forces pure CPU inference (no accelerate / torch)
+    # pure CPU
     return pipeline("text2text-generation", model=mdl, tokenizer=tok, device=-1)
 
 gen = load_model()
+
 
 
 # =========================
@@ -462,4 +463,5 @@ if btn and can_generate:
 
 st.markdown("---")
 st.caption("© UCB Asset Management Ltd | External-data-driven — no in-code samples")
+
 
