@@ -146,23 +146,88 @@ def samples_from_df(df: pd.DataFrame):
         raise ValueError("No valid rows (need non-empty intent + script).")
     return samples
 
-# =========================
-# Model (slow tokenizer + CPU)
-# =========================
-import os, sys
-os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+# ---------------- Model / Generator (local-or-remote) ----------------
+import os, sys, json, time
+import requests
+import streamlit as st
 
 MODEL_NAME = "google/flan-t5-small"
+HF_API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
+HF_TOKEN = os.environ.get("HUGGINGFACEHUB_API_TOKEN", "")
+
+def _have_torch() -> bool:
+    try:
+        import torch  # noqa
+        return True
+    except Exception:
+        return False
 
 @st.cache_resource(show_spinner=False)
-def load_model():
-    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-    tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)  # avoids 'tokenizers'
-    mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    return pipeline("text2text-generation", model=mdl, tokenizer=tok, device=-1)
+def get_generator():
+    """
+    Returns a callable generate(prompt, **params) that abstracts away
+    local vs remote inference.
+    """
+    if _have_torch():
+        # --- Local pipeline (fastest if torch exists) ---
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+        tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
+        mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+        pipe = pipeline("text2text-generation", model=mdl, tokenizer=tok, device_map="cpu")
 
-gen = load_model()
-st.caption(f"🔧 Python: {sys.version.split()[0]} | Engine: Transformers")
+        def _gen_local(prompt, max_new_tokens=500, temperature=0.8, top_p=0.95, top_k=50, repetition_penalty=1.05):
+            out = pipe(
+                prompt,
+                max_new_tokens=int(max_new_tokens),
+                temperature=float(temperature),
+                top_p=float(top_p),
+                top_k=int(top_k),
+                repetition_penalty=float(repetition_penalty),
+            )[0]["generated_text"]
+            return out
+
+        st.info("⚙️ Using local Transformers pipeline (PyTorch detected).", icon="⚙️")
+        return _gen_local
+
+    # --- Remote inference (no torch needed) ---
+    headers = {"Accept": "application/json"}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+
+    def _gen_remote(prompt, max_new_tokens=500, temperature=0.8, top_p=0.95, top_k=50, repetition_penalty=1.05):
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": int(max_new_tokens),
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+                "repetition_penalty": float(repetition_penalty),
+            },
+            "options": {"wait_for_model": True, "use_cache": True}
+        }
+        try:
+            r = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            # API returns a list of dicts with 'generated_text'
+            if isinstance(data, list) and data and "generated_text" in data[0]:
+                return data[0]["generated_text"]
+            # Some endpoints use {'generated_text': '...'}
+            if isinstance(data, dict) and "generated_text" in data:
+                return data["generated_text"]
+            # Or {'error': '...'}
+            if isinstance(data, dict) and "error" in data:
+                raise RuntimeError(data["error"])
+            return json.dumps(data, ensure_ascii=False)
+        except requests.exceptions.ReadTimeout:
+            raise RuntimeError("HF inference timeout. Try again or reduce max tokens.")
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"HF inference error: {e}")
+
+    st.warning("🌐 Using Hugging Face Inference API (no PyTorch). "
+               "Add a HUGGINGFACEHUB_API_TOKEN in app secrets for better reliability.", icon="🌐")
+    return _gen_remote
+
 
 
 
@@ -483,6 +548,7 @@ if btn and can_generate:
 
 st.markdown("---")
 st.caption("© UCB Asset Management Ltd | External-data-driven — no in-code samples")
+
 
 
 
