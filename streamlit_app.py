@@ -171,7 +171,8 @@ st.caption(f"🔧 Python: {sys.version.split()[0]} | Engine: Transformers")
 # Prompting (two-pass + anti-copy + variability)
 # =========================
 def _facts_block(product: str, include: bool) -> str:
-    if not include: return ""
+    if not include:
+        return ""
     ftxt = facts_for(product)
     return f"\n[FACTS]\n{ftxt}\n[/FACTS]\n" if ftxt else ""
 
@@ -182,11 +183,23 @@ def pick_style_shots(style_shots: list, k: int = 3) -> list:
     k = max(1, min(k, len(style_shots)))
     return random.sample(style_shots, k)
 
-def build_body_prompt(selected_shots, intent_sample, product, client_type, horizon, risk, extra, tone, include_facts=True, nonce=""):
+def build_body_prompt(
+    selected_shots,
+    intent_sample,
+    product,
+    client_type,
+    horizon,
+    risk,
+    extra,
+    tone,
+    include_facts=True,
+    nonce=""
+):
     styled = ""
     if selected_shots:
         blocks = [f"উদাহরণ {i} (স্টাইল মাত্র; কপি করবেন না):\n{s}\n" for i, s in enumerate(selected_shots, 1)]
         styled = "\n".join(blocks)
+
     ex = _paragraphize(intent_sample or "")
 
     tone_rule = {
@@ -206,29 +219,35 @@ def build_body_prompt(selected_shots, intent_sample, product, client_type, horiz
         f"ভিন্ন ভঙ্গিতে উপস্থাপন করুন (রূপান্তর আইডি: {nonce})."
     ]
 
-    prompt = f"""
-আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড RM। নিচের উদাহরণগুলোর স্টাইল অনুসরণ করুন কিন্তু কপি করবেন না—নিজস্ব শব্দে, নতুন বাক্য গঠন ব্যবহার করে একটি পূর্ণাঙ্গ বাংলা স্ক্রিপ্ট লিখুন।
+    # ✅ Prebuild strings so there are no backslashes inside { ... } expressions.
+    nl = "\n"
+    extra_hint = f"অতিরিক্ত স্টাইল হিন্ট (কপি নয়):{nl}{ex}" if ex else ""
+    facts_txt = _facts_block(product, include_facts)
+    rules_joined = nl.join(rules)
 
-{styled}
+    # Build final prompt (no backslashes inside {...})
+    prompt = (
+        "আপনি একজন অভিজ্ঞ মিউচুয়াল ফান্ড RM। নিচের উদাহরণগুলোর স্টাইল অনুসরণ করুন কিন্তু কপি করবেন না—"
+        "নিজস্ব শব্দে, নতুন বাক্য গঠন ব্যবহার করে একটি পূর্ণাঙ্গ বাংলা স্ক্রিপ্ট লিখুন।"
+        f"{nl}{nl}"
+        f"{styled}{nl if styled else ''}"
+        f"{extra_hint}{nl if extra_hint else ''}{nl}"
+        f"{facts_txt}{nl if facts_txt else ''}"
+        "নির্দেশনা:"
+        f"{nl}- {rules_joined}"
+        f"{nl}{nl}"
+        "ইনপুট:"
+        f"{nl}- ক্লায়েন্ট টাইপ: {client_type}"
+        f"{nl}- পণ্য: {product}"
+        f"{nl}- সময়সীমা: {horizon}"
+        f"{nl}- ঝুঁকি: {risk}"
+        f"{nl}- নোট: {extra}"
+        f"{nl}{nl}"
+        "আউটপুট:\nশুধু কথোপকথনমূলক বডি লিখুন; 'পণ্য-তথ্য' অংশটি এখন লিখবেন না।"
+    ).strip()
 
-{"অতিরিক্ত স্টাইল হিন্ট (কপি নয়):\n"+ex if ex else ""}
-
-{_facts_block(product, include_facts)}
-
-নির্দেশনা:
-- {chr(10).join(rules)}
-
-ইনপুট:
-- ক্লায়েন্ট টাইপ: {client_type}
-- পণ্য: {product}
-- সময়সীমা: {horizon}
-- ঝুঁকি: {risk}
-- নোট: {extra}
-
-আউটপুট:
-শুধু কথোপকথনমূলক বডি লিখুন; 'পণ্য-তথ্য' অংশটি এখন লিখবেন না।
-""".strip()
     return prompt
+
 
 def _fallback_body(prod, horizon):
     greeting = "আসসালামু আলাইকুম। আমি ইউসিবি অ্যাসেট ম্যানেজমেন্ট থেকে বলছি।"
@@ -464,6 +483,7 @@ if btn and can_generate:
 
 st.markdown("---")
 st.caption("© UCB Asset Management Ltd | External-data-driven — no in-code samples")
+
 
 
 
