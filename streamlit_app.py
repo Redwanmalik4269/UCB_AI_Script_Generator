@@ -147,22 +147,23 @@ def samples_from_df(df: pd.DataFrame):
     return samples
 
 # =========================
-# Model
+# Model (slow tokenizer + CPU)
 # =========================
-import os
+import os, sys
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
-MODEL_NAME = "google/flan-t5-small"  # lightweight and compatible for Cloud
+MODEL_NAME = "google/flan-t5-small"
 
 @st.cache_resource(show_spinner=False)
 def load_model():
-    # use slow tokenizer -> no 'tokenizers' build
-    tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+    tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)  # avoids 'tokenizers'
     mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-    # pure CPU
     return pipeline("text2text-generation", model=mdl, tokenizer=tok, device=-1)
 
 gen = load_model()
+st.caption(f"🔧 Python: {sys.version.split()[0]} | Engine: Transformers")
+
 
 
 
@@ -463,5 +464,6 @@ if btn and can_generate:
 
 st.markdown("---")
 st.caption("© UCB Asset Management Ltd | External-data-driven — no in-code samples")
+
 
 
